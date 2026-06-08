@@ -10,7 +10,6 @@ Download HyperMI.  The following command clones the current HyperMI repository f
 
     git clone https://github.com/CharlesDeng0814/HyperMI.git
 ### Environment Settings
-> python==3.6.13 \
 > scipy==1.1.0 \
 > torch==1.13.0+cu117 \
 > numpy==1.15.2 \
