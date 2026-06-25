@@ -1,53 +1,88 @@
-# HyperMI: Integration of Multi-omics Data with Biologically Informed Hypergraph Framework for Cancer Gene Identification
-HyperMI is a biologically informed hypergraph multi-omics integration framework to identify cancer genes .
-This repo is for the source code of "Integration of Multi-omics Data with Biologically Informed Hypergraph Framework for Cancer Gene Identification". \
+# HyperMI Repository
 
-Setup
-------------------------
-The setup process for HyperMI requires the following steps:
-### Download
-Download HyperMI.  The following command clones the current HyperMI repository from GitHub:
+This repository reorganizes the core code from `DualChannel_1 (2).ipynb` into a GitHub-friendly project structure while following the top-level layout of [CharlesDeng0814/HyperMI](https://github.com/CharlesDeng0814/HyperMI).
 
-    git clone https://github.com/CharlesDeng0814/HyperMI.git
-### Environment Settings
-> scipy==1.1.0 \
-> torch==1.13.0+cu117 \
-> numpy==1.15.2 \
-> pandas==0.23.4 \
-> scikit_learn==0.19.2
+## Project Structure
 
-GPU: NVIDIA A100 80G\
-CPU: Intel(R) Xeon(R) Gold 6230 CPU @ 2.10GHz
+```text
+HyperMI/
+|- Data/
+|- output/
+|- main.py
+|- models.py
+|- train_pred.py
+|- utils.py
+|- requirements.txt
+`- README.md
+```
 
-### Usage
-(1) After downloading and unzipping this repository, go into the folder. 
+## File Overview
 
-(2) We have created examples of HyperMI for predicting pan-cancer genes, namely 'main.py'.
+- `main.py`: command-line entry for training, evaluation, and prediction export.
+- `models.py`: hypergraph encoder, classifier, and dual-channel fusion model.
+- `train_pred.py`: cross-validation, feature transformation, training, fusion evaluation, and OOF score aggregation logic.
+- `utils.py`: data loading, hypergraph processing, metrics, and reproducibility helpers.
+- `Data/`: expected input data directory.
+- `output/`: prediction outputs.
 
-Assuming that you are currently in the downloaded folder, just run the following command and you will be able to build a model and make predictions:
+## Data Files
 
-predicting pan-cancer genes
+The repository is currently organized around these files under `./Data/`:
+
+- `796true.txt`
+- `2187false.txt`
+- `geneList.csv`
+- `multiOmicsFeature.csv`
+- `fullC2_genes.csv`
+- `fullC5_genes.csv`
+- `C2_hypergraph.csv`
+- `C2_weights.csv`
+- `C5_hypergraph.csv`
+- `C5_weights.csv`
+
+The original desktop experiment files such as `C2_hypergraph_mean_new.csv` and `C5_weights_mean_new.csv` were normalized into the naming scheme above for easier reuse and GitHub publishing.
+
+## Quick Start
+
+Install dependencies:
+
 ```bash
- 
-python main.py ./outputFile
- 
- ```
-
- ### Output
-The output of HyperMI is the ranking results and prediction scores of all genes.
-
-### Files
-*main.py*: Examples of HyperMI for cancer gene identification \
-*models.py*: HyperMI model \
-*train_pred.py*: Training and testing functions \
-*utils.py*: Supporting functions
-
-### Cite
+pip install -r requirements.txt
 ```
 
+Run training and export ranked predictions:
+
+```bash
+python main.py ./output/predictions.tsv
 ```
 
-## Contact
-If you have any questions, please contact us:<br>
-Chao Deng, `deng_chao@csu.edu.cn` <be>
-Jianxin Wang, `jxwang@mail.csu.edu.cn` 
+If you want to preserve the original C2 edge weights instead of replacing them with ones:
+
+```bash
+python main.py ./output/predictions.tsv --c2-weight-mode original
+```
+
+## Output
+
+The current code reports only the final fusion performance:
+
+- `Fusion AUROC`
+- `Fusion AUPRC`
+
+It does not report separate C2 or C5 performance metrics.
+
+The ranked prediction scores are written to the path you pass on the command line, for example `./output/predictions.tsv`.
+
+The exported per-gene score follows the OOF rule used in your final experiment:
+
+- For genes that appear in the labeled cross-validation splits, the exported score is the `oof_mean` score aggregated from the folds where that gene was in the test split.
+- For genes that never receive an OOF score, the exported score falls back to the full-model ensemble mean prediction across all seed-fold runs.
+
+So the final output remains one score per gene, but labeled training genes use OOF predictions rather than in-fold fitted scores.
+
+## Notes
+
+- The repository layout is aligned with the public `HyperMI` repository, but the implementation is rebuilt from your notebook.
+- The current code keeps the notebook's final dual-channel training strategy, including the random-forest one-hot feature transform, late fusion, and OOF-based final scoring.
+- GPU is used automatically when available; otherwise the code falls back to CPU.
+- On this machine, a local Python environment issue currently breaks `numpy` import at runtime, so full end-to-end execution may require fixing the Python environment first.
