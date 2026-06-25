@@ -1,127 +1,170 @@
-from sklearn.metrics import auc, roc_auc_score
-from sklearn.metrics import precision_recall_curve
-import pandas as pd
-import numpy as np
-import torch
+from __future__ import annotations
+
+import os
 import random
-import scipy.sparse as sp
+from pathlib import Path
+from typing import Iterable
+
+import numpy as np
+import pandas as pd
+import torch
 from scipy.sparse import coo_matrix
-def cal_auc(output, labels):
-    outputTest = output.cpu().detach().numpy()
-    outputTest = np.exp(outputTest)
-    outputTest = outputTest[:,1]
-    labelsTest = labels.cpu().numpy()
-    AUROC = roc_auc_score(labelsTest, outputTest)
-    precision, recall, _thresholds = precision_recall_curve(labelsTest, outputTest)
-    AUPRC = auc(recall, precision)
-    return AUROC,AUPRC
+from sklearn.metrics import auc, precision_recall_curve, roc_auc_score
 
-def getData(positiveGenePath, negativeGenePath, geneList):
-    positiveGene = pd.read_csv(positiveGenePath, header = None)
-    positiveGene = list(positiveGene[0].values)
-    positiveGene = list(set(geneList)&set(positiveGene))
-    positiveGene.sort()
-    negativeGene = pd.read_csv(negativeGenePath, header = None)     
-    negativeGene = negativeGene[0]
-    negativeGene = list(set(negativeGene)&set(geneList))
-    negativeGene.sort()
+
+def set_all_seeds(seed: int = 42) -> None:
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+
+def cal_auc(output: torch.Tensor, labels: torch.Tensor) -> tuple[float, float]:
+    output_test = output.detach().cpu().numpy()
+    output_test = np.exp(output_test)[:, 1]
+    labels_test = labels.detach().cpu().numpy()
+    auroc = roc_auc_score(labels_test, output_test)
+    precision, recall, _ = precision_recall_curve(labels_test, output_test)
+    auprc = auc(recall, precision)
+    return auroc, auprc
+
+
+def getData(
+    positiveGenePath: str | Path,
+    negativeGenePath: str | Path,
+    geneList: list[str],
+) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
+    positiveGene = pd.read_csv(positiveGenePath, header=None)[0].tolist()
+    positiveGene = sorted(set(geneList) & set(positiveGene))
+
+    negativeGene = pd.read_csv(negativeGenePath, header=None)[0].tolist()
+    negativeGene = sorted(set(geneList) & set(negativeGene))
     
-    #print("positiveGene = ",len(positiveGene))
-    labelFrame = pd.DataFrame(data = [0]*len(geneList), index = geneList)
-    labelFrame.loc[positiveGene,:] = 1
+    labelFrame = pd.DataFrame(data=[0] * len(geneList), index=geneList)
+    labelFrame.loc[positiveGene, :] = 1
     positiveIndex = np.where(labelFrame == 1)[0]
-    labelFrame.loc[negativeGene,:] = -1
+    labelFrame.loc[negativeGene, :] = -1
     negativeIndex = np.where(labelFrame == -1)[0]
-    labelFrame = pd.DataFrame(data = [0]*len(geneList), index = geneList)
-    labelFrame.loc[positiveGene,:] = 1
     
-    positiveIndex = list(positiveIndex)
-    negativeIndex = list(negativeIndex)
-    sampleIndex = positiveIndex + negativeIndex
-    sampleIndex = np.array(sampleIndex)
-    label = pd.DataFrame(data = [1]*len(positiveIndex) + [0]*len(negativeIndex))
-    label = label.values.ravel()
-    return  sampleIndex, label, labelFrame
+    labelFrame = pd.DataFrame(data=[0] * len(geneList), index=geneList)
+    labelFrame.loc[positiveGene, :] = 1
+    
+    sampleIndex = np.array(list(positiveIndex) + list(negativeIndex))
+    label = np.array([1] * len(positiveIndex) + [0] * len(negativeIndex))
+    return sampleIndex, label, labelFrame
 
-def getHyperGraph(hypergraph_edgesPath, edgesWeightsPath, Genes, used_gene):
-    hypergraph_edges = pd.read_csv(hypergraph_edgesPath,index_col=None,header=None)
-    hypergraph_edges = hypergraph_edges.values.T
+
+def _resolve_first_existing(candidates: Iterable[str | Path]) -> Path:
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        path = Path(candidate)
+        if path.exists():
+            return path
+    joined = "\n".join(f"- {Path(candidate)}" for candidate in candidates if candidate is not None)
+    raise FileNotFoundError(f"None of the candidate files exist:\n{joined}")
+
+
+def getHyperGraph(
+    hypergraph_edges_path: str | Path,
+    edges_weights_path: str | Path,
+    genes: list[str],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    hypergraph_edges = pd.read_csv(hypergraph_edges_path, index_col=None, header=None).values.T
     hypergraph_edges = torch.from_numpy(hypergraph_edges)
 
-    edgesWeights = pd.read_csv(edgesWeightsPath,index_col=None,header=None)
-    edgesWeights = edgesWeights.values.T
-    edgesWeights = edgesWeights[0]
-    edgesWeights = torch.from_numpy(edgesWeights)
-    edgesWeights[torch.where(edgesWeights==2)[0]]=1
-    edgesWeights = edgesWeights.unsqueeze(1)
-    edgesWeights = edgesWeights.float()
-
-    row  = hypergraph_edges[0]
-    col  = hypergraph_edges[1]
+    edgesWeights = pd.read_csv(edges_weights_path, index_col=None, header=None).values.T[0]
+    edgesWeights = torch.from_numpy(edgesWeights).unsqueeze(1).float()
+    
+    row = hypergraph_edges[0]
+    col = hypergraph_edges[1]
     data = edgesWeights.squeeze(1)
-    coo = coo_matrix((data, (row, col)), shape=(hypergraph_edges[0].max()+1,hypergraph_edges[1].max()+1))
-    weighted_Hypergraph = coo.toarray()
-
-    coo = coo_matrix((np.ones_like(edgesWeights.squeeze(1)), (row, col)), shape=(hypergraph_edges[0].max()+1, hypergraph_edges[1].max()+1))
-    nonWeighted_Hypergraph = coo.toarray()
-
-    weighted_Hypergraph_frame = pd.DataFrame(data = weighted_Hypergraph, index = Genes)
-    nonWeighted_Hypergraph_frame = pd.DataFrame(data = nonWeighted_Hypergraph, index = Genes)
-    return weighted_Hypergraph_frame, nonWeighted_Hypergraph_frame
-
-def processingHypergraph():
-    C2_geneList = pd.read_csv(r'./Data/fullC2_genes.csv',header=None,index_col=None)
-    C2_Genes = list(C2_geneList.iloc[:,0].values)
-
-    C5_geneList = pd.read_csv(r'./Data/fullC5_genes.csv',header=None,index_col=None)
-    C5_Genes = list(C5_geneList.iloc[:,0].values)
-
-    used_gene = pd.read_csv(r'./Data/geneList.csv',header=None,index_col=None)
-    used_gene = list(used_gene.iloc[:,0].values)
     
-    C2_hypergraph_edgesPath = r'./Data/C2_hypergraph.csv'
-    C2_edgesWeightsPath = r'./Data/C2_weights.csv'
-    C2_weighted_Hypergraph_frame, C2_nonWeighted_Hypergraph_frame = getHyperGraph(C2_hypergraph_edgesPath, C2_edgesWeightsPath, C2_Genes, used_gene)
-
-    C5_hypergraph_edgesPath = r'./Data/C5_hypergraph.csv'
-    C5_edgesWeightsPath = r'./Data/C5_weights.csv'
-    C5_weighted_Hypergraph_frame, C5_nonWeighted_Hypergraph_frame = getHyperGraph(C5_hypergraph_edgesPath, C5_edgesWeightsPath, C5_Genes, used_gene)
-
-    nonWeighted_marix = pd.concat([C2_nonWeighted_Hypergraph_frame,C5_nonWeighted_Hypergraph_frame],axis=1)
-    nonWeighted_marix.columns = np.arange(nonWeighted_marix.shape[1])
-    nonWeighted_marix = nonWeighted_marix.loc[used_gene]
-    nonWeighted_marix = nonWeighted_marix.fillna(0)
-
-    Weighted_marix = pd.concat([C2_weighted_Hypergraph_frame,C5_weighted_Hypergraph_frame],axis=1)
-    Weighted_marix.columns = np.arange(Weighted_marix.shape[1])
-    Weighted_marix = Weighted_marix.loc[used_gene]
-    Weighted_marix = Weighted_marix.fillna(0)
-
-    C2_nonWeighted_Hypergraph_frame = nonWeighted_marix.iloc[:,:C2_nonWeighted_Hypergraph_frame.shape[1]]
-    C5_nonWeighted_Hypergraph_frame = nonWeighted_marix.iloc[:,C2_nonWeighted_Hypergraph_frame.shape[1]:]
-    C2_nonWeighted_Hypergraph_frame_values = C2_nonWeighted_Hypergraph_frame.values
-    C2_weighted_Hypergraph_frame = Weighted_marix.iloc[:,:C2_nonWeighted_Hypergraph_frame.shape[1]]
-    C5_weighted_Hypergraph_frame = Weighted_marix.iloc[:,C2_nonWeighted_Hypergraph_frame.shape[1]:]
-    C5_weighted_Hypergraph_frame_values = C5_weighted_Hypergraph_frame.values
+    weighted = coo_matrix(
+        (data, (row, col)),
+        shape=(int(hypergraph_edges[0].max()) + 1, int(hypergraph_edges[1].max()) + 1),
+    ).toarray()
+    non_weighted = coo_matrix(
+        (np.ones_like(edgesWeights.squeeze(1)), (row, col)),
+        shape=(int(hypergraph_edges[0].max()) + 1, int(hypergraph_edges[1].max()) + 1),
+    ).toarray()
     
-    C2_hypergraph_edges = torch.nonzero(torch.from_numpy(C2_nonWeighted_Hypergraph_frame.values))
-    C2_hypergraph_edges = C2_hypergraph_edges.T
-    #print(C2_hypergraph_edges.shape)
-    C2_edgesWeights = C2_nonWeighted_Hypergraph_frame_values[C2_hypergraph_edges[0], C2_hypergraph_edges[1]]
-    C2_edgesWeights = torch.from_numpy(C2_edgesWeights)
-    C2_edgesWeights = C2_edgesWeights.float()
-    C2_hypergraph_edges = C2_hypergraph_edges.cuda()
-    C2_edgesWeights = C2_edgesWeights.cuda()
+    weighted_frame = pd.DataFrame(data=weighted, index=genes)
+    non_weighted_frame = pd.DataFrame(data=non_weighted, index=genes)
+    return weighted_frame, non_weighted_frame
+
+
+def processingHypergraph(
+    data_dir: str | Path = "./Data",
+    c2_edges_path: str | Path | None = None,
+    c2_weights_path: str | Path | None = None,
+    c5_edges_path: str | Path | None = None,
+    c5_weights_path: str | Path | None = None,
+    device: torch.device | None = None,
+):
+    data_dir = Path(data_dir)
+    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    c2_genes = pd.read_csv(data_dir / "fullC2_genes.csv", header=None, index_col=None).iloc[:, 0].tolist()
+    c5_genes = pd.read_csv(data_dir / "fullC5_genes.csv", header=None, index_col=None).iloc[:, 0].tolist()
+    used_gene = pd.read_csv(data_dir / "geneList.csv", header=None, index_col=None).iloc[:, 0].tolist()
     
-    C5_hypergraph_edges = torch.nonzero(torch.from_numpy(C5_nonWeighted_Hypergraph_frame.values))
-    C5_hypergraph_edges = C5_hypergraph_edges.T
-    #print(C5_hypergraph_edges.shape)
-    C5_edgesWeights = C5_weighted_Hypergraph_frame_values[C5_hypergraph_edges[0], C5_hypergraph_edges[1]]
-    C5_edgesWeights = torch.from_numpy(C5_edgesWeights)
-    C5_edgesWeights = C5_edgesWeights.float()
-    C5_hypergraph_edges = C5_hypergraph_edges.cuda()
-    C5_edgesWeights = C5_edgesWeights.cuda()
+    c2_edges_path = _resolve_first_existing(
+        [
+            c2_edges_path,
+            data_dir / "C2_hypergraph.csv",
+            data_dir / "C2_hypergraph_edges.csv",
+        ]
+    )
+    c2_weights_path = _resolve_first_existing([c2_weights_path, data_dir / "C2_weights.csv"])
+    c5_edges_path = _resolve_first_existing(
+        [
+            c5_edges_path,
+            data_dir / "C5_hypergraph.csv",
+            data_dir / "C5_hypergraph_edges.csv",
+            data_dir / "C5_hypergraph_mean_new.csv",
+        ]
+    )
+    c5_weights_path = _resolve_first_existing(
+        [c5_weights_path, data_dir / "C5_weights.csv", data_dir / "C5_weights_mean_new.csv"]
+    )
     
-    C2_data = (C2_nonWeighted_Hypergraph_frame, C2_hypergraph_edges, C2_edgesWeights)
-    C5_data = (C5_nonWeighted_Hypergraph_frame, C5_hypergraph_edges, C5_edgesWeights)
-    return C2_data, C5_data
+    c2_weighted_frame, c2_non_weighted_frame = getHyperGraph(c2_edges_path, c2_weights_path, c2_genes)
+    c5_weighted_frame, c5_non_weighted_frame = getHyperGraph(c5_edges_path, c5_weights_path, c5_genes)
+    
+    non_weighted_matrix = pd.concat([c2_non_weighted_frame, c5_non_weighted_frame], axis=1)
+    non_weighted_matrix.columns = np.arange(non_weighted_matrix.shape[1])
+    non_weighted_matrix = non_weighted_matrix.loc[used_gene].fillna(0)
+    
+    weighted_matrix = pd.concat([c2_weighted_frame, c5_weighted_frame], axis=1)
+    weighted_matrix.columns = np.arange(weighted_matrix.shape[1])
+    weighted_matrix = weighted_matrix.loc[used_gene].fillna(0)
+    
+    c2_non_weighted_frame = non_weighted_matrix.iloc[:, : c2_non_weighted_frame.shape[1]]
+    c5_non_weighted_frame = non_weighted_matrix.iloc[:, c2_non_weighted_frame.shape[1] :]
+    c2_weighted_frame = weighted_matrix.iloc[:, : c2_non_weighted_frame.shape[1]]
+    c5_weighted_frame = weighted_matrix.iloc[:, c2_non_weighted_frame.shape[1] :]
+    
+    c2_hypergraph_edges = torch.nonzero(torch.from_numpy(c2_non_weighted_frame.values)).T
+    c2_edges_weights = c2_weighted_frame.values[c2_hypergraph_edges[0], c2_hypergraph_edges[1]]
+    c2_edges_weights = torch.from_numpy(c2_edges_weights).float()
+    
+    c5_hypergraph_edges = torch.nonzero(torch.from_numpy(c5_non_weighted_frame.values)).T
+    c5_edges_weights = c5_weighted_frame.values[c5_hypergraph_edges[0], c5_hypergraph_edges[1]]
+    c5_edges_weights = torch.from_numpy(c5_edges_weights).float()
+    
+    c2_data = (
+        c2_non_weighted_frame,
+        c2_hypergraph_edges.to(device),
+        c2_edges_weights.to(device),
+    )
+    c5_data = (
+        c5_non_weighted_frame,
+        c5_hypergraph_edges.to(device),
+        c5_edges_weights.to(device),
+    )
+    return c2_data, c5_data
+
